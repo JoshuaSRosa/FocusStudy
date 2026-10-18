@@ -1,0 +1,46 @@
+Instruções para execução do BACKEND
+! Tudo com `$` trata-se de variável, definidas por quem está executando o código
+
+SEM DOCKER:
+script com gunicorn:
+    - DB_HOST=$DB_HOST DB_NAME=$DB_NAME DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD DB_PORT=$DB_PORT gunicorn --bind "0.0.0.0:8080" --workers 4 main:app
+
+script sem gunicorn:
+    - DB_HOST=$DB_HOST DB_NAME=$DB_NAME DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD DB_PORT=$DB_PORT python3 main.py
+
+COM DOCKER:
+Para o funcionamento correto, o Database deve estar conectado na mesma rede do backend, podendo ser:
+- Docker do Backend conectado à rede HOST
+- Database também dockerizado e na mesma rede, podendo ser ambos em HOST ou ambos em uma rede privada do docker
+
+script apenas backend dockerizado:
+    ! Isto deve ser executado dentro da pasta `backend/`
+    - docker build -t $IMAGE .
+    - docker run --name "backend" --privileged --net=host $IMAGE
+
+
+
+Instruções para registro e login
+Register:
+    - Requisição com forms
+    Parâmetros:
+        - username
+        - email
+        - name
+        - password
+        Retorno:
+            - JSON -> status = sucess
+
+Login:
+    - Requisição com forms
+    Parâmetros:
+        - username/email
+        - password
+    Retorno:
+        - JSON -> status = sucess; access_token = access_token; logged_as = user
+
+    - Requisição com JWT
+        - Enviar no header `Authorization: Bearer <token>`
+        Retorno:
+        - JSON -> status = sucess; logged_as = user
+
