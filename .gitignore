@@ -24,3 +24,13 @@ dist-ssr
 
 node_modules
 dist
+
+# Vite cache
+.vite
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+backend/.backend/
+.env
