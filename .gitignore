@@ -34,3 +34,9 @@ __pycache__/
 .venv/
 backend/.backend/
 .env
+
+# Backend
+.backend
+.pytest_cache/
+.coverage
+backend/uploads/

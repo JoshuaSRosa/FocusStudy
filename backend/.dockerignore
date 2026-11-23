@@ -1,4 +1,4 @@
-.backend
-.venv
-__pycache__
-*.pyc
+__pycache__/
+.pytest_cache/
+.coverage
+uploads/

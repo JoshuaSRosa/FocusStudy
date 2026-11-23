@@ -1,144 +1,51 @@
-from flask import Blueprint, jsonify, request
-from flask.wrappers import Response
-from flask_jwt_extended import create_access_token, get_jwt_identity, verify_jwt_in_request
-from psycopg2 import errors
-from psycopg2.extras import RealDictCursor
-from werkzeug.security import check_password_hash, generate_password_hash
-import database as db
-import re
+"""/api blueprint and shared helpers.
 
+Routes are split by subject:
+  - auth.py     -> /health, /register, /login       (Sprint 1, fixed)
+  - courses.py  -> /courses, /courses/<id>/pdf      (FR-01..FR-05)
+  - sessions.py -> /sessions                        (FR-06, FR-07)
+"""
+from datetime import datetime, timezone
+
+from flask import Blueprint, jsonify, request
+from flask_jwt_extended import get_jwt_identity
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
-#===========
-# AUX FUNCS=
-#===========
 
-def validate_user(user: str) -> bool:
-    """Apenas letras, números e Underline - Não permite espaços em branco - Entre 3 e 20 caracteres"""
-    pat = re.compile(r"^[a-zA-Z0-9_]{3,20}$")
-    if pat.match(user):
-        return True
-    return False
+def error_response(message: str, http_status: int, **extra):
+    """Single API error format: {"status": "error", "error": "..."}"""
+    return jsonify(status="error", error=message, **extra), http_status
 
-def validate_email(email: str) -> bool:
-    """Padrão universal nome@dominio.com - Permite pontos, hífens etc antes do @ - Garante ao menos 1 arroba no endereço"""
-    pat = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
-    if pat.match(email):
-        return True
-    return False
 
-def validate_password(password: str) -> bool:
-    """1 letra maiúscula - 1 letra minúscula - 1 número - 1 caractere especial - Pelo menos 8 caracteres"""
-    pat = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&#])[A-Za-z\d@$!%*?&#]{8,}$")
-    if pat.match(password):
-        return True
-    return False
+def request_data() -> dict:
+    """Accepts JSON or form data (the Sprint 1 frontend uses forms)."""
+    if request.is_json:
+        data = request.get_json(silent=True)
+        return data if isinstance(data, dict) else {}
+    return request.form.to_dict()
 
-def validate_name(name: str) -> bool:
-    """Suporte a nome e sobrenome - Suporte a acentuação - Não aceita caracteres especiais como !, @, _"""
-    pat = re.compile(r"^[A-Za-zÀ-ÿ]+(?: [A-Za-zÀ-ÿ]+)+$")
-    if pat.match(name):
-        return True
-    return False
 
-def db_unavailable() -> tuple[Response, int]:
-    return jsonify(status="error", error="failed connection with database"), 503
+def current_user_id() -> int:
+    """ID of the token owner (the JWT identity is the id as text)."""
+    return int(get_jwt_identity())
 
-#========
-# ROUTES=
-#========
 
-@api.route("/health", methods=["GET"])
-def health() -> Response:
-    return jsonify({"status": "ok"})
-
-@api.route("/register", methods=["POST"])
-def register() -> Response:
-    username = request.form.get("username", None)
-    email = request.form.get("email", None)
-    password = request.form.get("password", None)
-    name = request.form.get("name", None)
-
-    if not all([username, email, password, name]): # Se faltar algum parâmetro, retorna erro
-        return jsonify(status="error", error="wrong forms request"), 401
-
-    # Validar EMAIL, USERNAME, NAME e PASSWORD
-    if not validate_user(username):
-        return jsonify(status="error", error="username regex failed"), 401
-    if not validate_email(email):
-        return jsonify(status="error", error="email regex failed"), 401
-    if not validate_name(name):
-        return jsonify(status="error", error="name regex failed"), 401
-    if not validate_password(password):
-        return jsonify(status="error", error="password regex failed"), 401
-
-    conn = db.get_db_connection()
-    if not conn:
-        return db_unavailable()
-
+def to_positive_int(value) -> int | None:
+    """Converts ids sent by the client; None if invalid."""
+    if isinstance(value, bool):
+        return None
     try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT username, email FROM users WHERE username = %s OR email = %s",
-                (username, email),
-            )
-            rows = cur.fetchall()
-            usuario_existe = any(r["username"] == username for r in rows)
-            email_existe = any(r["email"] == email for r in rows)
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
-            if usuario_existe and email_existe:
-                return jsonify(status="error", error="usuário e email já cadastrados!"), 401
-            if usuario_existe:
-                return jsonify(status="error", error="usuário já cadastrado"), 401
-            if email_existe:
-                return jsonify(status="error", error="email já cadastrado"), 401
 
-            cur.execute(
-                "INSERT INTO users (username, email, name, password) VALUES (%s, %s, %s, %s)",
-                (username, email, name, generate_password_hash(password)),
-            )
-        conn.commit()
-    except errors.UniqueViolation:
-        # Outro cadastro com o mesmo usuario/email entrou entre o SELECT e o INSERT.
-        conn.rollback()
-        return jsonify(status="error", error="usuário ou email já cadastrado"), 401
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        db.release_db_connection(conn)
+def iso(dt: datetime | None) -> str | None:
+    """Timestamps always in UTC, ISO 8601."""
+    return dt.astimezone(timezone.utc).isoformat() if dt else None
 
-    return jsonify(status="success")
 
-@api.route("/login", methods=["POST"])
-def login() -> Response:
-    user = request.form.get("user", None)
-    password = request.form.get("password", None)
-
-    if verify_jwt_in_request(optional=True) is not None:
-        return jsonify(status="sucess", logged_as=get_jwt_identity()), 200
-
-    if not user or not password:
-        return jsonify(status="error", error="wrong forms request"), 401
-
-    conn = db.get_db_connection()
-    if not conn:
-        return db_unavailable()
-
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT username, password FROM users WHERE username = %s OR email = %s",
-                (user, user),
-            )
-            row = cur.fetchone()
-    finally:
-        db.release_db_connection(conn)
-
-    if row and check_password_hash(row["password"], password):
-        username = row["username"]
-        access_token = create_access_token(identity=username)
-        return jsonify(status="sucess", access_token=access_token, logged_as=username), 200
-
-    return jsonify(status="error", error="failed login"), 401
+# Imported at the end to register the routes on the blueprint (avoids circular import)
+from . import auth, courses, sessions  # noqa: E402,F401

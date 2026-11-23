@@ -1,57 +1,95 @@
 services:
-  db:
-    image: postgres:17-alpine
-    container_name: focusstudy-db
-    restart: unless-stopped
+  database:
+    build:
+      context: database
+      dockerfile: Dockerfile
+    container_name: PDS2Database
+    restart: always
     environment:
-      POSTGRES_DB: ${DB_NAME:-focusstudy}
-      POSTGRES_USER: ${DB_USER:-focusstudy}
-      POSTGRES_PASSWORD: ${DB_PASS:-focusstudy}
+      - POSTGRES_USER=${DB_USER:-admin}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-changeme}
+      - POSTGRES_DB=${DB_NAME:-database}
+    ports:
+      - "5433:5432"   # 5433 = port on YOUR machine (DBeaver/psql); between containers it is 5432
     volumes:
       - db_data:/var/lib/postgresql/data
-      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-admin} -d ${DB_NAME:-database}"]
       interval: 5s
-      timeout: 3s
-      retries: 10
+      timeout: 5s
+      retries: 20
     networks:
       - app_network
 
   backend:
     build:
-      context: ./backend
-    container_name: focusstudy-backend
-    restart: unless-stopped
+      context: backend
+      dockerfile: Dockerfile
+    container_name: PDS2Backend
+    restart: always
     environment:
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: ${DB_NAME:-focusstudy}
-      DB_USER: ${DB_USER:-focusstudy}
-      DB_PASS: ${DB_PASS:-focusstudy}
-      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me}
-    depends_on:
-      db:
-        condition: service_healthy
+      # Inside the Docker network the database is reached by the SERVICE NAME and
+      # the INTERNAL port (localhost:5433 pointed to the container itself)
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_USER=${DB_USER:-admin}
+      - DB_PASSWORD=${DB_PASSWORD:-changeme}
+      - DB_NAME=${DB_NAME:-database}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-insecure-change-it-in-the-env-file-0123456789}
+      - UPLOAD_DIR=/app/uploads
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-20}
     ports:
-      - "${BACKEND_PORT:-8080}:8080"
+      - "8080:8080"
+    volumes:
+      - pdf_data:/app/uploads
+    depends_on:
+      database:
+        condition: service_healthy
     networks:
       - app_network
 
+  # React build served by nginx; nginx forwards /api/ to backend:8080
   frontend:
     build:
-      context: ./frontend
-    container_name: focusstudy-frontend
-    restart: unless-stopped
-    depends_on:
-      - backend
+      context: frontend
+      dockerfile: Dockerfile
+    container_name: PDS2Frontend
+    restart: always
     ports:
       - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - backend
+    networks:
+      - app_network
+
+  # Tests (Verification). Not started by `docker compose up`; run with:
+  #   docker compose --profile test run --rm tests
+  tests:
+    profiles: ["test"]
+    build:
+      context: backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: "true"
+    environment:
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_USER=${DB_USER:-admin}
+      - DB_PASSWORD=${DB_PASSWORD:-changeme}
+      - TEST_DB_NAME=focusstudy_test   # separate database, created and dropped by the tests
+      - INIT_SQL_PATH=/schema/init.sql
+    volumes:
+      - ./database/init.sql:/schema/init.sql:ro
+    command: ["pytest", "--traceability", "--cov=.", "--cov-report=term-missing:skip-covered"]
+    depends_on:
+      database:
+        condition: service_healthy
     networks:
       - app_network
 
 volumes:
   db_data:
+  pdf_data:
 
 networks:
   app_network:
