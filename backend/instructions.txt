@@ -1,46 +1,78 @@
 Instruções para execução do BACKEND
 ! Tudo com `$` trata-se de variável, definidas por quem está executando o código
+! Referência completa dos endpoints: docs/API.md
+
+VARIÁVEIS DE AMBIENTE:
+    - DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD   (conexão com o PostgreSQL)
+    - JWT_SECRET_KEY   (OBRIGATÓRIA, pelo menos 32 caracteres)
+    - UPLOAD_DIR       (pasta dos PDFs; padrão: backend/uploads)
+    - MAX_UPLOAD_MB    (tamanho máximo do PDF; padrão: 20)
+    - FLASK_DEBUG=1    (só para desenvolvimento com `python3 main.py`)
 
 SEM DOCKER:
+Instalar dependências:
+    - pip install -r requirements.txt          (produção)
+    - pip install -r requirements-dev.txt      (com pytest)
+
+Criar as tabelas (uma vez, em um banco vazio):
+    - psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f ../database/init.sql
+
 script com gunicorn:
-    - DB_HOST=$DB_HOST DB_NAME=$DB_NAME DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD DB_PORT=$DB_PORT gunicorn --bind "0.0.0.0:8080" --workers 4 main:app
+    - DB_HOST=$DB_HOST DB_NAME=$DB_NAME DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD DB_PORT=$DB_PORT JWT_SECRET_KEY=$JWT_SECRET_KEY gunicorn --bind "0.0.0.0:8080" --workers 4 "main:create_app()"
 
 script sem gunicorn:
-    - DB_HOST=$DB_HOST DB_NAME=$DB_NAME DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD DB_PORT=$DB_PORT python3 main.py
+    - DB_HOST=$DB_HOST DB_NAME=$DB_NAME DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD DB_PORT=$DB_PORT JWT_SECRET_KEY=$JWT_SECRET_KEY python3 main.py
 
-COM DOCKER:
-Para o funcionamento correto, o Database deve estar conectado na mesma rede do backend, podendo ser:
-- Docker do Backend conectado à rede HOST
-- Database também dockerizado e na mesma rede, podendo ser ambos em HOST ou ambos em uma rede privada do docker
+COM DOCKER (recomendado, a partir da pasta raiz do projeto):
+    - docker compose up --build
+    ! Dentro da rede do Docker o backend acessa o banco por DB_HOST=database e DB_PORT=5432.
+    ! A porta 5433 é apenas para acessar o banco do SEU computador (DBeaver, psql).
 
-script apenas backend dockerizado:
-    ! Isto deve ser executado dentro da pasta `backend/`
-    - docker build -t $IMAGE .
-    - docker run --name "backend" --privileged --net=host $IMAGE
+TESTES:
+Com Docker (a partir da pasta raiz):
+    - docker compose --profile test run --rm tests
+
+Sem Docker (dentro de backend/, com um PostgreSQL acessível):
+    - DB_HOST=$DB_HOST DB_PORT=$DB_PORT DB_USER=$DB_USER DB_PASSWORD=$DB_PASSWORD pytest --traceability --cov=.
+    ! Os testes usam o banco TEST_DB_NAME (padrão focusstudy_test), que é APAGADO a cada execução.
+    ! O usuário do banco precisa poder criar bancos. Sem PostgreSQL, só os testes de unidade rodam.
 
 
 
 Instruções para registro e login
-Register:
-    - Requisição com forms
+Register (POST /api/register):
+    - Requisição com form ou JSON
     Parâmetros:
         - username
         - email
         - name
         - password
-        Retorno:
-            - JSON -> status = sucess
+        - program (curso de graduação, opcional)
+    Retorno (201):
+        - JSON -> status = success; user = {id, username, email, name}
 
-Login:
-    - Requisição com forms
+Login (POST /api/login):
+    - Requisição com form ou JSON
     Parâmetros:
-        - username/email
+        - user (username ou email)
         - password
-    Retorno:
-        - JSON -> status = sucess; access_token = access_token; logged_as = user
+    Retorno (200):
+        - JSON -> status = success; access_token = access_token; logged_as = username
 
     - Requisição com JWT
         - Enviar no header `Authorization: Bearer <token>`
         Retorno:
-        - JSON -> status = sucess; logged_as = user
+        - JSON -> status = success; logged_as = username
 
+
+
+Resumo dos endpoints do Sprint 2 (todos exigem `Authorization: Bearer <token>`)
+    - GET    /api/courses
+    - GET    /api/courses/<id>
+    - POST   /api/courses                     {name, teacher}
+    - PUT    /api/courses/<id>                {name, teacher}
+    - DELETE /api/courses/<id>
+    - POST   /api/courses/<id>/pdf            multipart, campo "file"
+    - POST   /api/sessions                    {action: "start", course_id}
+                                              {action: "pause" | "resume" | "finish", session_id}
+    - GET    /api/sessions?course=<id>        (filtro opcional)

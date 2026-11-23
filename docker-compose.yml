@@ -1,20 +1,81 @@
 services:
+  database:
+    build:
+      context: database
+      dockerfile: Dockerfile
+    container_name: PDS2Database
+    restart: always
+    environment:
+      - POSTGRES_USER=${DB_USER:-admin}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-changeme}
+      - POSTGRES_DB=${DB_NAME:-database}
+    ports:
+      - "5433:5432"   # 5433 = port on YOUR machine (DBeaver/psql); between containers it is 5432
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-admin} -d ${DB_NAME:-database}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - app_network
+
   backend:
     build:
       context: backend
       dockerfile: Dockerfile
-    container_name: backend
+    container_name: PDS2Backend
     restart: always
     environment:
-      - DB_HOST=DB_HOST
-      - DB_PORT=DB_PORT
-      - DB_USER=DB_USER
-      - DB_PASS=DB_PASS
-      - DB_NAME=DB_NAME
+      # Inside the Docker network the database is reached by the SERVICE NAME and
+      # the INTERNAL port (localhost:5433 pointed to the container itself)
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_USER=${DB_USER:-admin}
+      - DB_PASSWORD=${DB_PASSWORD:-changeme}
+      - DB_NAME=${DB_NAME:-database}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-dev-insecure-change-it-in-the-env-file-0123456789}
+      - UPLOAD_DIR=/app/uploads
+      - MAX_UPLOAD_MB=${MAX_UPLOAD_MB:-20}
     ports:
       - "8080:8080"
+    volumes:
+      - pdf_data:/app/uploads
+    depends_on:
+      database:
+        condition: service_healthy
     networks:
-      - "app_network"
+      - app_network
+
+  # Tests (Verification). Not started by `docker compose up`; run with:
+  #   docker compose --profile test run --rm tests
+  tests:
+    profiles: ["test"]
+    build:
+      context: backend
+      dockerfile: Dockerfile
+      args:
+        INSTALL_DEV: "true"
+    environment:
+      - DB_HOST=database
+      - DB_PORT=5432
+      - DB_USER=${DB_USER:-admin}
+      - DB_PASSWORD=${DB_PASSWORD:-changeme}
+      - TEST_DB_NAME=focusstudy_test   # separate database, created and dropped by the tests
+      - INIT_SQL_PATH=/schema/init.sql
+    volumes:
+      - ./database/init.sql:/schema/init.sql:ro
+    command: ["pytest", "--traceability", "--cov=.", "--cov-report=term-missing:skip-covered"]
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - app_network
+
+volumes:
+  db_data:
+  pdf_data:
 
 networks:
   app_network:
