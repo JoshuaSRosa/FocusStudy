@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: focusstudy-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-focusstudy}
+      POSTGRES_USER: ${DB_USER:-focusstudy}
+      POSTGRES_PASSWORD: ${DB_PASS:-focusstudy}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - app_network
+
+  backend:
+    build:
+      context: ./backend
+    container_name: focusstudy-backend
+    restart: unless-stopped
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-focusstudy}
+      DB_USER: ${DB_USER:-focusstudy}
+      DB_PASS: ${DB_PASS:-focusstudy}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    networks:
+      - app_network
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: focusstudy-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - app_network
+
+volumes:
+  db_data:
+
+networks:
+  app_network:
+    driver: bridge
