@@ -1,14 +1,12 @@
 from flask import Blueprint, jsonify, request
 from flask.wrappers import Response
 from flask_jwt_extended import create_access_token, get_jwt_identity, verify_jwt_in_request
-# import database as db
-from psycopg2.extras import RealDictConnection
-from psycopg2.extensions import cursor
-import hashlib
+from psycopg2 import errors
+from psycopg2.extras import RealDictCursor
+from werkzeug.security import check_password_hash, generate_password_hash
+import database as db
 import re
 
-
-db_sim = {"users": [{"username": "User1", "email": "email@gmail.com", "name": "Algum Nome", "password": "a665a45920422f9d417e4867efdc4fb8a04a1f3fff1fa07e998e86f7f7a27ae3"}, {"username": "User2", "email": "outroemail@email.com", "name": "Outro Nome", "password": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}]} # Senhas: 123; abc
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -44,6 +42,9 @@ def validate_name(name: str) -> bool:
         return True
     return False
 
+def db_unavailable() -> tuple[Response, int]:
+    return jsonify(status="error", error="failed connection with database"), 503
+
 #========
 # ROUTES=
 #========
@@ -60,35 +61,7 @@ def register() -> Response:
     name = request.form.get("name", None)
 
     if not all([username, email, password, name]): # Se faltar algum parâmetro, retorna erro
-        return jsonify({"status", "error - wrong forms request"}), 401
-
-    # DADOS REAIS
-    # conn = db.get_db_connection()
-    # if not conn:
-    #     return jsonify(status="error", error="failed connection with database"), 401 # Erro ao se conectar com o DB
-
-    # cur: cursor = conn.cursor(cursor_factory=RealDictConnection)
-    # query = r"SELECT username, email FROM users WHERE email = ? OR username = ?"
-    # cur.execute(query, (email, username))
-    # data = cur.fetchall()
-    # if len(data) == 2:
-    #     return jsonify(status="error", error="usuário e email já cadastrados")
-    # elif data[0] == username:
-    #     return jsonify(status="error", error="usuário já cadastrado")
-    # elif data[1] == email:
-    #     return jsonify(status="error", error="email já cadastrado")
-    
-    # DADOS TESTE
-    data = db_sim["users"]
-    for d in data: # DADOS TESTE
-        u = d["username"]
-        e = d["email"]
-        if e == email and u == username:
-            return jsonify(status="error", error="usuário e email já cadastrados!"), 401
-        elif u == username:
-            return jsonify(status="error", error="usuário já cadastrado"), 401
-        elif e == email:
-            return jsonify(status="error", error="email já cadastrado"), 401
+        return jsonify(status="error", error="wrong forms request"), 401
 
     # Validar EMAIL, USERNAME, NAME e PASSWORD
     if not validate_user(username):
@@ -100,17 +73,44 @@ def register() -> Response:
     if not validate_password(password):
         return jsonify(status="error", error="password regex failed"), 401
 
-    # DADOS REAIS
-    # query = r"INSERT INTO users VALUES (?, ?, ?, ?)"
-    # cur.execute(query, (username, email, name, hashlib.sha256(password.encode()).hexdigest()))
+    conn = db.get_db_connection()
+    if not conn:
+        return db_unavailable()
 
-    # db.release_db_connection(conn)
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT username, email FROM users WHERE username = %s OR email = %s",
+                (username, email),
+            )
+            rows = cur.fetchall()
+            usuario_existe = any(r["username"] == username for r in rows)
+            email_existe = any(r["email"] == email for r in rows)
 
-    # DADOS TESTE
-    db_sim["users"].append({"username": username, "email": email, "name": name, "password": hashlib.sha256(password.encode()).hexdigest()})
+            if usuario_existe and email_existe:
+                return jsonify(status="error", error="usuário e email já cadastrados!"), 401
+            if usuario_existe:
+                return jsonify(status="error", error="usuário já cadastrado"), 401
+            if email_existe:
+                return jsonify(status="error", error="email já cadastrado"), 401
+
+            cur.execute(
+                "INSERT INTO users (username, email, name, password) VALUES (%s, %s, %s, %s)",
+                (username, email, name, generate_password_hash(password)),
+            )
+        conn.commit()
+    except errors.UniqueViolation:
+        # Outro cadastro com o mesmo usuario/email entrou entre o SELECT e o INSERT.
+        conn.rollback()
+        return jsonify(status="error", error="usuário ou email já cadastrado"), 401
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        db.release_db_connection(conn)
 
     return jsonify(status="success")
-    
+
 @api.route("/login", methods=["POST"])
 def login() -> Response:
     user = request.form.get("user", None)
@@ -119,15 +119,26 @@ def login() -> Response:
     if verify_jwt_in_request(optional=True) is not None:
         return jsonify(status="sucess", logged_as=get_jwt_identity()), 200
 
-    hash_password = hashlib.sha256(password.encode()).hexdigest()
+    if not user or not password:
+        return jsonify(status="error", error="wrong forms request"), 401
 
-    for u in db_sim["users"]:
-        print(u)
-        if u["email"] != user and u["username"] != user:
-            continue
+    conn = db.get_db_connection()
+    if not conn:
+        return db_unavailable()
 
-        if u["password"] == hash_password:
-            access_token = create_access_token(identity=user)
-            return jsonify(status="sucess", access_token=access_token, logged_as=user), 200
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT username, password FROM users WHERE username = %s OR email = %s",
+                (user, user),
+            )
+            row = cur.fetchone()
+    finally:
+        db.release_db_connection(conn)
+
+    if row and check_password_hash(row["password"], password):
+        username = row["username"]
+        access_token = create_access_token(identity=username)
+        return jsonify(status="sucess", access_token=access_token, logged_as=username), 200
 
     return jsonify(status="error", error="failed login"), 401
